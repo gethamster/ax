@@ -434,7 +434,6 @@ func runGet(serverURL, atespace string, args []string) error {
 		return yaml.NewEncoder(os.Stdout).Encode(task)
 	}
 
-
 	if (resource == "workspaces" || resource == "workspace") && len(args) == 1 {
 		resp, err := client.ListWorkspaces(ctx, &v1alpha1.ListWorkspacesRequest{Atespace: atespace})
 		if err != nil {
@@ -641,7 +640,6 @@ func runDescribe(serverURL, atespace string, args []string) error {
 		return nil
 	}
 
-
 	task, err := client.GetTask(ctx, &v1alpha1.GetTaskRequest{Atespace: atespace, Name: name})
 	if err != nil {
 		return fmt.Errorf("getting task %q: %w", name, err)
@@ -670,16 +668,12 @@ func runDescribe(serverURL, atespace string, args []string) error {
 	fmt.Printf("Actor:        %s\n", actor)
 	fmt.Printf("Worker IP:    %s\n", workerIP)
 	if task.Spec != nil {
-		if refs := task.Spec.WorkspaceRefs(); len(refs) > 0 {
-			paths := task.Spec.WorkspacePaths()
-			fmt.Println("Workspaces:")
-			for i, ref := range refs {
-				fmt.Printf("  - %s  path=%s", ref.Name, paths[i])
-				if ref.Goal != "" {
-					fmt.Printf("  goal=%q", ref.Goal)
-				}
-				fmt.Println()
+		if ref := task.Spec.GetWorkspace(); ref != nil {
+			fmt.Printf("Workspace:    %s  path=%s", ref.Name, task.Spec.WorkspacePath())
+			if ref.Goal != "" {
+				fmt.Printf("  goal=%q", ref.Goal)
 			}
+			fmt.Println()
 		}
 		if task.Spec.Image != "" {
 			fmt.Printf("Image:        %s\n", task.Spec.Image)

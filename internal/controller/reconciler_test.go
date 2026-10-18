@@ -249,7 +249,7 @@ func TestTaskReconciler(t *testing.T) {
 		Status: &v1alpha1.TaskStatus{Actor: "not-the-task", Phase: "Running"},
 	}
 
-	reconciled, err := reconciler.Reconcile(ctx, task)
+	reconciled, err := reconciler.Reconcile(ctx, task, nil)
 	if err != nil {
 		t.Fatalf("Reconcile failed: %v", err)
 	}
@@ -724,7 +724,7 @@ func TestTaskReconciler_TransientSubstrateUnavailable(t *testing.T) {
 		Metadata: &v1alpha1.ObjectMeta{Name: "transient-atespace"},
 		Spec:     &v1alpha1.TaskSpec{Image: "ghrc.io/my-org/my-image"},
 	}
-	reconciled, err := reconciler.Reconcile(ctx, task)
+	reconciled, err := reconciler.Reconcile(ctx, task, nil)
 	if err == nil {
 		t.Fatal("expected error from Reconcile when EnsureAtespace fails, got nil")
 	}
@@ -740,7 +740,7 @@ func TestTaskReconciler_TransientSubstrateUnavailable(t *testing.T) {
 		Metadata: &v1alpha1.ObjectMeta{Name: "transient-actor"},
 		Spec:     &v1alpha1.TaskSpec{Image: "ghrc.io/my-org/my-image"},
 	}
-	reconciled2, err := reconciler.Reconcile(ctx, task2)
+	reconciled2, err := reconciler.Reconcile(ctx, task2, nil)
 	if err == nil {
 		t.Fatal("expected error from Reconcile when EnsureActor fails, got nil")
 	}
@@ -758,7 +758,7 @@ func TestTaskReconciler_TransientSubstrateUnavailable(t *testing.T) {
 		Spec:     &v1alpha1.TaskSpec{Image: "ghrc.io/my-org/my-image"},
 		Status:   &v1alpha1.TaskStatus{Phase: "Running"},
 	}
-	reconciled3, err := reconciler.Reconcile(ctx, task3)
+	reconciled3, err := reconciler.Reconcile(ctx, task3, nil)
 	if err == nil {
 		t.Fatal("expected error from Reconcile when ResumeActor fails, got nil")
 	}
@@ -770,7 +770,7 @@ func TestTaskReconciler_TransientSubstrateUnavailable(t *testing.T) {
 	// Recovery on retry:
 	mockSrv.resumeActorErr = nil
 	reconciled3.Status.Phase = "Running"
-	recovered, err := reconciler.Reconcile(ctx, reconciled3)
+	recovered, err := reconciler.Reconcile(ctx, reconciled3, nil)
 	if err != nil {
 		t.Fatalf("expected Reconcile to succeed after Substrate recovers, got %v", err)
 	}
@@ -784,7 +784,7 @@ func TestTaskReconciler_TransientSubstrateUnavailable(t *testing.T) {
 		Metadata: &v1alpha1.ObjectMeta{Name: "permanent-actor-err"},
 		Spec:     &v1alpha1.TaskSpec{Image: "ghrc.io/my-org/my-image"},
 	}
-	reconciled4, err := reconciler.Reconcile(ctx, task4)
+	reconciled4, err := reconciler.Reconcile(ctx, task4, nil)
 	if err == nil {
 		t.Fatal("expected error on InvalidArgument, got nil")
 	}
