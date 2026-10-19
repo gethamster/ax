@@ -225,7 +225,7 @@ const (
 
 	// The egress gateway CA plus public roots, so guests can use https egress rules.
 	EgressTrustVolume = "egress-trust-bundle"
-	EgressTrustDir    = "/run/ate/egress-trust-bundle/"
+	EgressTrustDir    = "/run/ate/egress-trust-bundle"
 
 	// defaultRetryAttempts is the maximum number of calls retryOnCodes makes. With
 	// exponential backoff from defaultRetryInterval capped at maxRetryInterval
