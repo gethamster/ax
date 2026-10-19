@@ -332,6 +332,21 @@ func workerSelector() *ateapipb.Selector {
 	return &ateapipb.Selector{MatchLabels: labels}
 }
 
+// guestSecurityContext adds AX_GUEST_CAPABILITIES ("NAME,NAME") to the guest,
+// e.g. what dockerd needs inside a microVM, where the VM is the boundary.
+func guestSecurityContext() *ateapipb.SecurityContext {
+	var add []string
+	for _, c := range strings.Split(os.Getenv("AX_GUEST_CAPABILITIES"), ",") {
+		if c = strings.TrimSpace(c); c != "" {
+			add = append(add, c)
+		}
+	}
+	if len(add) == 0 {
+		return nil
+	}
+	return &ateapipb.SecurityContext{Capabilities: &ateapipb.Capabilities{Add: add}}
+}
+
 // BuildActorTemplate constructs a Substrate ActorTemplate based on the standard ate-env specification.
 func BuildActorTemplate(atespace, name, image string, envMap map[string]string, command []string, snapshotsBucket string, resources *v1alpha1.ResourcesSpec) *ateapipb.ActorTemplate {
 	if atespace == "" {
@@ -365,10 +380,11 @@ func BuildActorTemplate(atespace, name, image string, envMap map[string]string, 
 			Atespace: atespace,
 		},
 		Containers: []*ateapipb.Container{{
-			Name:    "guest",
-			Image:   image,
-			Command: command,
-			Env:     envList,
+			Name:            "guest",
+			Image:           image,
+			Command:         command,
+			Env:             envList,
+			SecurityContext: guestSecurityContext(),
 			WakeupProbe: &ateapipb.WakeupProbe{
 				HttpGet: &ateapipb.HttpGetAction{
 					Path: "/readyz",

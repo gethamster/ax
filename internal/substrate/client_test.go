@@ -289,6 +289,19 @@ func TestBuildActorTemplate_MountsEgressTrustBundle(t *testing.T) {
 	}
 }
 
+func TestBuildActorTemplate_GuestCapabilities(t *testing.T) {
+	t.Setenv("AX_GUEST_CAPABILITIES", "")
+	if sc := BuildActorTemplate("", "t", "", nil, nil, "gs://b/", nil).GetContainers()[0].GetSecurityContext(); sc != nil {
+		t.Errorf("expected no security context, got %v", sc)
+	}
+
+	t.Setenv("AX_GUEST_CAPABILITIES", " SYS_ADMIN, NET_ADMIN ,,CHOWN")
+	got := BuildActorTemplate("", "t", "", nil, nil, "gs://b/", nil).GetContainers()[0].GetSecurityContext().GetCapabilities().GetAdd()
+	if !slices.Equal(got, []string{"SYS_ADMIN", "NET_ADMIN", "CHOWN"}) {
+		t.Errorf("capabilities = %v", got)
+	}
+}
+
 func TestBuildActorTemplate_WorkerSelector(t *testing.T) {
 	t.Setenv("AX_WORKER_SELECTOR", "")
 	if sel := BuildActorTemplate("", "t", "", nil, nil, "gs://b/", nil).GetWorkerSelector(); sel != nil {
