@@ -223,6 +223,10 @@ const (
 	DefaultActorCPU    = "2"
 	DefaultActorMemory = "4Gi"
 
+	// The egress gateway CA plus public roots, so guests can use https egress rules.
+	EgressTrustVolume = "egress-trust-bundle"
+	EgressTrustDir    = "/run/ate/egress-trust-bundle/"
+
 	// defaultRetryAttempts is the maximum number of calls retryOnCodes makes. With
 	// exponential backoff from defaultRetryInterval capped at maxRetryInterval
 	// (±50% jitter), the total wait across all attempts is roughly 6s-20s.
@@ -374,11 +378,22 @@ func BuildActorTemplate(atespace, name, image string, envMap map[string]string, 
 			VolumeMounts: []*ateapipb.VolumeMount{{
 				Name:      "workspace",
 				MountPath: "/workspace",
+			}, {
+				Name:      EgressTrustVolume,
+				MountPath: EgressTrustDir,
 			}},
 		}},
 		Volumes: []*ateapipb.Volume{{
 			Name:       "workspace",
 			DurableDir: &ateapipb.DurableDirVolumeSource{},
+		}, {
+			Name: EgressTrustVolume,
+			SystemInfo: &ateapipb.SystemInfoVolumeSource{DataSources: []*ateapipb.SystemInfoDataSource{{
+				TrustBundle: &ateapipb.TrustBundleDataSource{
+					Names: []string{"egress-mitm.ate.dev", "system-roots.ate.dev"},
+					Path:  "trust-bundle.pem",
+				},
+			}}},
 		}},
 		SnapshotConfig: &ateapipb.SnapshotConfig{
 			StorageLocation:   snapshotsBucket,

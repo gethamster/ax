@@ -17,6 +17,7 @@ package substrate
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -262,6 +263,29 @@ func TestBuildActorTemplate_Resources(t *testing.T) {
 				t.Errorf("limits = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestBuildActorTemplate_MountsEgressTrustBundle(t *testing.T) {
+	tmpl := BuildActorTemplate("", "t", "", nil, nil, "gs://b/", nil)
+
+	var bundle *ateapipb.TrustBundleDataSource
+	for _, v := range tmpl.GetVolumes() {
+		if v.GetName() == EgressTrustVolume {
+			bundle = v.GetSystemInfo().GetDataSources()[0].GetTrustBundle()
+		}
+	}
+	if bundle == nil || bundle.GetPath() != "trust-bundle.pem" ||
+		!slices.Equal(bundle.GetNames(), []string{"egress-mitm.ate.dev", "system-roots.ate.dev"}) {
+		t.Fatalf("trust bundle volume = %+v", bundle)
+	}
+
+	mounted := false
+	for _, m := range tmpl.GetContainers()[0].GetVolumeMounts() {
+		mounted = mounted || (m.GetName() == EgressTrustVolume && m.GetMountPath() == EgressTrustDir)
+	}
+	if !mounted {
+		t.Errorf("guest does not mount %s at %s", EgressTrustVolume, EgressTrustDir)
 	}
 }
 
