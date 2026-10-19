@@ -21,8 +21,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
 	"github.com/google/ax/pkg/apis/v1alpha1"
+	"go.ate.dev/substrate/pkg/proto/ateapipb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -203,7 +203,7 @@ func TestClient_DeleteActor_PropagatesRPCError(t *testing.T) {
 func TestBuildActorTemplate(t *testing.T) {
 	t.Setenv("AX_SNAPSHOTS_BUCKET", "gs://ate-snapshots/ax/")
 
-	tmpl := BuildActorTemplate("", "test-tmpl", "", map[string]string{"FOO": "BAR"}, nil, "")
+	tmpl := BuildActorTemplate("", "test-tmpl", "", map[string]string{"FOO": "BAR"}, nil, "", nil)
 	if tmpl.GetMetadata().GetAtespace() != "default" {
 		t.Errorf("expected default atespace, got %q", tmpl.GetMetadata().GetAtespace())
 	}
@@ -227,6 +227,54 @@ func TestBuildActorTemplate(t *testing.T) {
 	}
 	if snapCfg.GetPreferredFidelity() != ateapipb.SnapshotFidelity_SNAPSHOT_FIDELITY_VOLUMES {
 		t.Errorf("expected PreferredFidelity VOLUMES, got %v", snapCfg.GetPreferredFidelity())
+	}
+}
+
+func limitsByName(tmpl *ateapipb.ActorTemplate) map[string]string {
+	got := map[string]string{}
+	for _, l := range tmpl.GetResources().GetLimits() {
+		got[l.GetName()] = l.GetQuantity()
+	}
+	return got
+}
+
+func TestBuildActorTemplate_Resources(t *testing.T) {
+	tests := []struct {
+		name string
+		spec *v1alpha1.ResourcesSpec
+		want map[string]string
+	}{
+		{"defaults when unset", nil, map[string]string{"cpu": DefaultActorCPU, "memory": DefaultActorMemory}},
+		{"limits win", &v1alpha1.ResourcesSpec{
+			Requests: &v1alpha1.ResourceList{Cpu: "1", Memory: "2Gi"},
+			Limits:   &v1alpha1.ResourceList{Cpu: "4", Memory: "16Gi"},
+		}, map[string]string{"cpu": "4", "memory": "16Gi"}},
+		{"requests fill missing limits", &v1alpha1.ResourcesSpec{
+			Requests: &v1alpha1.ResourceList{Cpu: "1", Memory: "2Gi"},
+			Limits:   &v1alpha1.ResourceList{Cpu: "3"},
+		}, map[string]string{"cpu": "3", "memory": "2Gi"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpl := BuildActorTemplate("", "t", "", nil, nil, "gs://b/", tt.spec)
+			got := limitsByName(tmpl)
+			if len(got) != 2 || got["cpu"] != tt.want["cpu"] || got["memory"] != tt.want["memory"] {
+				t.Errorf("limits = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBuildActorTemplate_WorkerSelector(t *testing.T) {
+	t.Setenv("AX_WORKER_SELECTOR", "")
+	if sel := BuildActorTemplate("", "t", "", nil, nil, "gs://b/", nil).GetWorkerSelector(); sel != nil {
+		t.Errorf("expected no selector, got %v", sel)
+	}
+
+	t.Setenv("AX_WORKER_SELECTOR", " ax.dev/pool=microvm, tier=dev ,bogus")
+	got := BuildActorTemplate("", "t", "", nil, nil, "gs://b/", nil).GetWorkerSelector().GetMatchLabels()
+	if len(got) != 2 || got["ax.dev/pool"] != "microvm" || got["tier"] != "dev" {
+		t.Errorf("selector = %v", got)
 	}
 }
 
@@ -312,6 +360,7 @@ func TestClient_EnsureActorTemplateWithImage_Success(t *testing.T) {
 		"default",
 		"task-1-tmpl-abcd",
 		"custom-image:v1",
+		nil,
 		map[string]string{"FOO": "BAR"},
 	)
 	if err != nil {
@@ -346,6 +395,7 @@ func TestClient_EnsureActorTemplateWithImage_PropagatesError(t *testing.T) {
 		"default",
 		"task-1-tmpl-abcd",
 		"custom-image:v1",
+		nil,
 	)
 	if err == nil {
 		t.Fatal("expected error, got nil")

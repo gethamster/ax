@@ -26,9 +26,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
 	"github.com/cenkalti/backoff/v5"
 	"github.com/google/ax/pkg/apis/v1alpha1"
+	"go.ate.dev/substrate/pkg/proto/ateapipb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
@@ -219,6 +219,10 @@ const (
 	DefaultGuestCommand    = "/usr/local/bin/ax-task-runner"
 	DefaultSnapshotsBucket = "gs://dberkov-gke-dev3/ate-env/"
 
+	// Substrate requires cpu and memory limits on every ActorTemplate.
+	DefaultActorCPU    = "2"
+	DefaultActorMemory = "4Gi"
+
 	// defaultRetryAttempts is the maximum number of calls retryOnCodes makes. With
 	// exponential backoff from defaultRetryInterval capped at maxRetryInterval
 	// (±50% jitter), the total wait across all attempts is roughly 6s-20s.
@@ -290,8 +294,42 @@ func retryOnCodes(ctx context.Context, fn func() error, retryable ...codes.Code)
 	return err
 }
 
+// actorResources maps a Task's limits (falling back to requests, then the
+// defaults) onto the cpu and memory limits Substrate requires.
+func actorResources(spec *v1alpha1.ResourcesSpec) *ateapipb.Resources {
+	pick := func(limit, request, fallback string) string {
+		if limit != "" {
+			return limit
+		}
+		if request != "" {
+			return request
+		}
+		return fallback
+	}
+	limits, requests := spec.GetLimits(), spec.GetRequests()
+	return &ateapipb.Resources{Limits: []*ateapipb.Limits{
+		{Name: "cpu", Quantity: pick(limits.GetCpu(), requests.GetCpu(), DefaultActorCPU)},
+		{Name: "memory", Quantity: pick(limits.GetMemory(), requests.GetMemory(), DefaultActorMemory)},
+	}}
+}
+
+// workerSelector parses AX_WORKER_SELECTOR ("key=value,key=value") into the
+// WorkerPool label selector; the selected pool decides the sandbox class.
+func workerSelector() *ateapipb.Selector {
+	labels := map[string]string{}
+	for _, pair := range strings.Split(os.Getenv("AX_WORKER_SELECTOR"), ",") {
+		if k, v, ok := strings.Cut(strings.TrimSpace(pair), "="); ok && k != "" {
+			labels[k] = v
+		}
+	}
+	if len(labels) == 0 {
+		return nil
+	}
+	return &ateapipb.Selector{MatchLabels: labels}
+}
+
 // BuildActorTemplate constructs a Substrate ActorTemplate based on the standard ate-env specification.
-func BuildActorTemplate(atespace, name, image string, envMap map[string]string, command []string, snapshotsBucket string) *ateapipb.ActorTemplate {
+func BuildActorTemplate(atespace, name, image string, envMap map[string]string, command []string, snapshotsBucket string, resources *v1alpha1.ResourcesSpec) *ateapipb.ActorTemplate {
 	if atespace == "" {
 		atespace = "default"
 	}
@@ -327,8 +365,8 @@ func BuildActorTemplate(atespace, name, image string, envMap map[string]string, 
 			Image:   image,
 			Command: command,
 			Env:     envList,
-			WakeupProbe: &ateapipb.ContainerWakeupProbe{
-				HttpGet: &ateapipb.HTTPGetAction{
+			WakeupProbe: &ateapipb.WakeupProbe{
+				HttpGet: &ateapipb.HttpGetAction{
 					Path: "/readyz",
 					Port: 80,
 				},
@@ -346,15 +384,13 @@ func BuildActorTemplate(atespace, name, image string, envMap map[string]string, 
 			StorageLocation:   snapshotsBucket,
 			PreferredFidelity: ateapipb.SnapshotFidelity_SNAPSHOT_FIDELITY_VOLUMES,
 		},
-		SandboxConfig: &ateapipb.SandboxConfig{
-			SandboxClass: ateapipb.SandboxClass_SANDBOX_CLASS_GVISOR,
-			ConfigName:   "gvisor-default",
-		},
+		WorkerSelector: workerSelector(),
+		Resources:      actorResources(resources),
 	}
 }
 
 // EnsureActorTemplateWithImage creates an ActorTemplate using the specified container image and optional environment variables.
-func (c *Client) EnsureActorTemplateWithImage(ctx context.Context, baseAtespace, baseTemplate, targetAtespace, targetTemplate, image string, extraEnv ...map[string]string) (*ateapipb.ActorTemplate, error) {
+func (c *Client) EnsureActorTemplateWithImage(ctx context.Context, baseAtespace, baseTemplate, targetAtespace, targetTemplate, image string, resources *v1alpha1.ResourcesSpec, extraEnv ...map[string]string) (*ateapipb.ActorTemplate, error) {
 	existing, err := c.GetActorTemplate(ctx, targetAtespace, targetTemplate)
 	if err == nil && existing != nil {
 		return existing, nil
@@ -367,7 +403,7 @@ func (c *Client) EnsureActorTemplateWithImage(ctx context.Context, baseAtespace,
 		}
 	}
 
-	tmpl := BuildActorTemplate(targetAtespace, targetTemplate, image, envMap, nil, "")
+	tmpl := BuildActorTemplate(targetAtespace, targetTemplate, image, envMap, nil, "", resources)
 	req := &ateapipb.CreateActorTemplateRequest{
 		ActorTemplate: tmpl,
 	}
