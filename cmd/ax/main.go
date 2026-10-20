@@ -1095,10 +1095,16 @@ func runSSH(serverURL, atespace, kubeContext string, args []string) error {
 		cleanup     func()
 	)
 
-	// 1. First, check if worker IP is directly reachable (e.g. within cluster or local mesh)
+	// 1. In-cluster callers name the atenet-router address, as ax-server does: worker pods only
+	// admit the router, so neither a direct dial nor a port-forward is needed.
 	d := net.Dialer{Timeout: 500 * time.Millisecond}
 	guestEndpoint := net.JoinHostPort(host, fmt.Sprint(port))
-	if testConn, dialErr := d.Dial("tcp", guestEndpoint); dialErr == nil {
+	if routerAddr := os.Getenv("ATENET_ROUTER_ADDR"); routerAddr != "" {
+		guestClient, err = guest.DialTarget(routerAddr, targetActor)
+		if err != nil {
+			return fmt.Errorf("connecting to guest via atenet-router at %s: %w", routerAddr, err)
+		}
+	} else if testConn, dialErr := d.Dial("tcp", guestEndpoint); dialErr == nil {
 		_ = testConn.Close()
 		guestClient, err = guest.Dial(guestEndpoint)
 		if err != nil {
