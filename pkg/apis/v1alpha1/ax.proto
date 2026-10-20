@@ -78,6 +78,10 @@ message TaskSpec {
   // debug enables the in-container guest services (process execution and file
   // access) that back `ax ssh`. Off by default.
   bool debug = 6;
+  // seed_tag names a Substrate Tag in the task's atespace. The actor is created
+  // from that snapshot under the tagged actor's template, so image, command and
+  // env come from the snapshot; this task's own are ignored.
+  string seed_tag = 7;
 }
 
 message EnvVar {

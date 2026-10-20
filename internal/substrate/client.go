@@ -347,6 +347,21 @@ func guestSecurityContext() *ateapipb.SecurityContext {
 	return &ateapipb.SecurityContext{Capabilities: &ateapipb.Capabilities{Add: add}}
 }
 
+// snapshotFidelity reads AX_SNAPSHOT_FIDELITY (VOLUMES, ROOTFS or MEMORY), defaulting to VOLUMES.
+// MEMORY resumes the running guest instead of cold-booting it.
+func snapshotFidelity() ateapipb.SnapshotFidelity {
+	name := strings.ToUpper(strings.TrimSpace(os.Getenv("AX_SNAPSHOT_FIDELITY")))
+	if name == "" {
+		return ateapipb.SnapshotFidelity_SNAPSHOT_FIDELITY_VOLUMES
+	}
+	v, ok := ateapipb.SnapshotFidelity_value["SNAPSHOT_FIDELITY_"+name]
+	if !ok || v == int32(ateapipb.SnapshotFidelity_SNAPSHOT_FIDELITY_UNSPECIFIED) {
+		slog.Warn("ignoring unknown AX_SNAPSHOT_FIDELITY, using VOLUMES", "value", name)
+		return ateapipb.SnapshotFidelity_SNAPSHOT_FIDELITY_VOLUMES
+	}
+	return ateapipb.SnapshotFidelity(v)
+}
+
 // BuildActorTemplate constructs a Substrate ActorTemplate based on the standard ate-env specification.
 func BuildActorTemplate(atespace, name, image string, envMap map[string]string, command []string, snapshotsBucket string, resources *v1alpha1.ResourcesSpec) *ateapipb.ActorTemplate {
 	if atespace == "" {
@@ -413,7 +428,7 @@ func BuildActorTemplate(atespace, name, image string, envMap map[string]string, 
 		}},
 		SnapshotConfig: &ateapipb.SnapshotConfig{
 			StorageLocation:   snapshotsBucket,
-			PreferredFidelity: ateapipb.SnapshotFidelity_SNAPSHOT_FIDELITY_VOLUMES,
+			PreferredFidelity: snapshotFidelity(),
 		},
 		WorkerSelector: workerSelector(),
 		Resources:      actorResources(resources),
@@ -453,8 +468,9 @@ func (c *Client) EnsureActorTemplateWithImage(ctx context.Context, baseAtespace,
 	return c.GetActorTemplate(ctx, targetAtespace, targetTemplate)
 }
 
-// EnsureActor creates an Actor in the specified atespace deriving from an ActorTemplate.
-func (c *Client) EnsureActor(ctx context.Context, atespace, actorName, templateAtespace, templateName string) (*ateapipb.Actor, error) {
+// EnsureActor creates an Actor in the specified atespace deriving from an ActorTemplate,
+// seeded from sourceTag's snapshot when it is set.
+func (c *Client) EnsureActor(ctx context.Context, atespace, actorName, templateAtespace, templateName, sourceTag string) (*ateapipb.Actor, error) {
 	req := &ateapipb.CreateActorRequest{
 		Actor: &ateapipb.Actor{
 			Metadata: &ateapipb.ResourceMetadata{
@@ -466,6 +482,9 @@ func (c *Client) EnsureActor(ctx context.Context, atespace, actorName, templateA
 				Name:     templateName,
 			},
 		},
+	}
+	if sourceTag != "" {
+		req.Actor.SourceTag = &ateapipb.ObjectRef{Atespace: atespace, Name: sourceTag}
 	}
 	var actor *ateapipb.Actor
 	err := retryOnCodes(ctx, func() error {
@@ -655,6 +674,34 @@ func (c *Client) DeleteActor(ctx context.Context, atespace, actorName string) er
 			}
 		}
 	}
+}
+
+// TagTemplate returns the ActorTemplate a Tag's snapshot was taken under: Substrate
+// seeds actors from a tag only under that template.
+func (c *Client) TagTemplate(ctx context.Context, atespace, tagName string) (*ateapipb.ActorTemplate, error) {
+	var tag *ateapipb.Tag
+	err := retryOnCodes(ctx, func() error {
+		var err error
+		tag, err = c.control.GetTag(ctx, &ateapipb.GetTagRequest{Tag: &ateapipb.ObjectRef{Atespace: atespace, Name: tagName}})
+		return err
+	}, codes.Unavailable)
+	if err != nil {
+		return nil, fmt.Errorf("getting tag %s/%s: %w", atespace, tagName, err)
+	}
+	uid := tag.GetStatus().GetActorTemplateUid()
+	if uid == "" {
+		return nil, fmt.Errorf("tag %s/%s has no snapshot yet", atespace, tagName)
+	}
+	templates, err := c.ListActorTemplates(ctx, atespace)
+	if err != nil {
+		return nil, err
+	}
+	for _, tmpl := range templates {
+		if tmpl.GetMetadata().GetUid() == uid {
+			return tmpl, nil
+		}
+	}
+	return nil, fmt.Errorf("tag %s/%s: actor template %s no longer exists", atespace, tagName, uid)
 }
 
 // ListActorTemplates returns all ActorTemplates in the given atespace.

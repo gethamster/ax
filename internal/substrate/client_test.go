@@ -533,3 +533,18 @@ func TestIsTransientError(t *testing.T) {
 		t.Error("expected codes.InvalidArgument to be non-transient")
 	}
 }
+
+func TestBuildActorTemplate_SnapshotFidelity(t *testing.T) {
+	for env, want := range map[string]ateapipb.SnapshotFidelity{
+		"":            ateapipb.SnapshotFidelity_SNAPSHOT_FIDELITY_VOLUMES,
+		" memory ":    ateapipb.SnapshotFidelity_SNAPSHOT_FIDELITY_MEMORY,
+		"ROOTFS":      ateapipb.SnapshotFidelity_SNAPSHOT_FIDELITY_ROOTFS,
+		"UNSPECIFIED": ateapipb.SnapshotFidelity_SNAPSHOT_FIDELITY_VOLUMES,
+		"bogus":       ateapipb.SnapshotFidelity_SNAPSHOT_FIDELITY_VOLUMES,
+	} {
+		t.Setenv("AX_SNAPSHOT_FIDELITY", env)
+		if got := BuildActorTemplate("", "t", "", nil, nil, "gs://b/", nil).GetSnapshotConfig().GetPreferredFidelity(); got != want {
+			t.Errorf("AX_SNAPSHOT_FIDELITY=%q: fidelity %v, want %v", env, got, want)
+		}
+	}
+}

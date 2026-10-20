@@ -31,6 +31,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 type mockControlServer struct {
@@ -50,6 +51,9 @@ type mockControlServer struct {
 	resumeActorErr    error
 	crashedActor      string
 	revertedActors    []string
+	tagTemplateUIDs   map[string]string
+	createdFrom       map[string]*ateapipb.ObjectRef
+	createdSourceTags map[string]string
 }
 
 // noSecrets is a SecretResolver for tests: it never finds a key and never touches a cluster.
@@ -98,6 +102,12 @@ func (m *mockControlServer) CreateActor(ctx context.Context, req *ateapipb.Creat
 		return nil, status.Error(codes.AlreadyExists, "actor exists")
 	}
 	m.createdActors = append(m.createdActors, name)
+	if m.createdFrom == nil {
+		m.createdFrom = map[string]*ateapipb.ObjectRef{}
+		m.createdSourceTags = map[string]string{}
+	}
+	m.createdFrom[name] = req.GetActor().GetActorTemplate()
+	m.createdSourceTags[name] = req.GetActor().GetSourceTag().GetName()
 	return &ateapipb.Actor{
 		Metadata: &ateapipb.ResourceMetadata{Name: name},
 		Status: &ateapipb.ActorStatus{
@@ -192,10 +202,18 @@ func (m *mockControlServer) ListActorTemplates(ctx context.Context, req *ateapip
 	resp := &ateapipb.ListActorTemplatesResponse{}
 	for name := range m.actorTemplates {
 		resp.ActorTemplates = append(resp.ActorTemplates, &ateapipb.ActorTemplate{
-			Metadata: &ateapipb.ResourceMetadata{Name: name, Atespace: req.GetAtespace()},
+			Metadata: &ateapipb.ResourceMetadata{Name: name, Atespace: req.GetAtespace(), Uid: "uid-" + name},
 		})
 	}
 	return resp, nil
+}
+
+func (m *mockControlServer) GetTag(_ context.Context, req *ateapipb.GetTagRequest) (*ateapipb.Tag, error) {
+	uid, ok := m.tagTemplateUIDs[req.GetTag().GetName()]
+	if !ok {
+		return nil, status.Error(codes.NotFound, "tag not found")
+	}
+	return &ateapipb.Tag{Metadata: &ateapipb.ResourceMetadata{Name: req.GetTag().GetName()}, Status: &ateapipb.TagStatus{ActorTemplateUid: uid}}, nil
 }
 
 func (m *mockControlServer) DeleteActorTemplate(ctx context.Context, req *ateapipb.DeleteActorTemplateRequest) (*ateapipb.ActorTemplate, error) {
@@ -681,7 +699,7 @@ func TestEnsureActor_RevertsCrashedActor(t *testing.T) {
 	}
 	defer client.Close()
 
-	actor, err := client.EnsureActor(context.Background(), "default", "job", "default", "job-tmpl-0a1b2c3d")
+	actor, err := client.EnsureActor(context.Background(), "default", "job", "default", "job-tmpl-0a1b2c3d", "")
 	if err != nil {
 		t.Fatalf("EnsureActor failed: %v", err)
 	}
@@ -792,4 +810,61 @@ func TestTaskReconciler_TransientSubstrateUnavailable(t *testing.T) {
 		t.Errorf("expected Phase='Failed' on permanent error, got %q", reconciled4.GetStatus().GetPhase())
 	}
 	mockSrv.createActorErr = nil
+}
+
+func TestTaskReconciler_SeedTag(t *testing.T) {
+	ctx := context.Background()
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	defer lis.Close()
+
+	mockSrv := &mockControlServer{
+		actorTemplates:  map[string]bool{"golden-tmpl-0a1b2c3d": true},
+		tagTemplateUIDs: map[string]string{"studio-warm": "uid-golden-tmpl-0a1b2c3d"},
+	}
+	grpcServer := grpc.NewServer()
+	ateapipb.RegisterControlServer(grpcServer, mockSrv)
+	go grpcServer.Serve(lis)
+	defer grpcServer.Stop()
+
+	client, err := substrate.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("failed to create substrate client: %v", err)
+	}
+	defer client.Close()
+
+	reconciler := controller.NewTaskReconciler(client, "test-template", v1alpha1.DefaultSystemNamespace)
+	reconciler.SecretResolver = noSecrets
+
+	task := &v1alpha1.Task{
+		ApiVersion: v1alpha1.APIVersion,
+		Kind:       v1alpha1.KindTask,
+		Metadata:   &v1alpha1.ObjectMeta{Name: "work-1", Atespace: "default"},
+		Spec:       &v1alpha1.TaskSpec{Image: "ghcr.io/ignored/image", SeedTag: "studio-warm"},
+	}
+	if _, err := reconciler.Reconcile(ctx, task); err != nil {
+		t.Fatalf("Reconcile failed: %v", err)
+	}
+	if len(mockSrv.actorTemplates) != 1 {
+		t.Errorf("seeded task created templates: %v", mockSrv.actorTemplates)
+	}
+	if got := mockSrv.createdFrom["work-1"].GetName(); got != "golden-tmpl-0a1b2c3d" {
+		t.Errorf("actor template = %q, want the tag's template", got)
+	}
+	if got := mockSrv.createdSourceTags["work-1"]; got != "studio-warm" {
+		t.Errorf("source tag = %q, want studio-warm", got)
+	}
+
+	missing := proto.Clone(task).(*v1alpha1.Task)
+	missing.Metadata.Name = "work-2"
+	missing.Spec.SeedTag = "nope"
+	reconciled, err := reconciler.Reconcile(ctx, missing)
+	if err == nil || reconciled.Status.Phase != "Failed" {
+		t.Errorf("unknown tag: phase %q, err %v; want Failed with an error", reconciled.Status.Phase, err)
+	}
+	if len(mockSrv.createdActors) != 1 {
+		t.Errorf("unknown tag still created an actor: %v", mockSrv.createdActors)
+	}
 }

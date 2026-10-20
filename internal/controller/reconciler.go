@@ -172,8 +172,25 @@ func (r *TaskReconciler) Reconcile(ctx context.Context, task *v1alpha1.Task, wor
 		extraEnv["AX_WORKSPACES_YAML"] = wsYAML
 	}
 
-	// If a custom image, workspace, or extra environment is specified, provision or use a dedicated ActorTemplate
-	if task.Spec != nil && (task.Spec.Image != "" || len(extraEnv) > 0) {
+	seedTag := task.GetSpec().GetSeedTag()
+	if seedTag != "" {
+		// A seeded actor must share the tagged actor's template, so no per-task template is built.
+		tmpl, err := r.client.TagTemplate(ctx, atespace, seedTag)
+		if err != nil {
+			if substrate.IsTransientError(err) {
+				r.setNotReady(task, "SubstrateUnavailable", err.Error(), now)
+				task.Status.Phase = "Pending"
+				return task, fmt.Errorf("resolving seed tag: %w", err)
+			}
+			r.setNotReady(task, "SeedTagUnresolved", err.Error(), now)
+			task.Status.Phase = "Failed"
+			return task, fmt.Errorf("resolving seed tag: %w", err)
+		}
+		templateAtespace = tmpl.GetMetadata().GetAtespace()
+		templateName = tmpl.GetMetadata().GetName()
+		slog.Info("seeding actor from tag", "tag", seedTag, "templateName", templateName)
+	} else if task.Spec != nil && (task.Spec.Image != "" || len(extraEnv) > 0) {
+		// A custom image, workspace, or extra environment gets a dedicated ActorTemplate.
 		slog.Info("ensuring custom ActorTemplate for task", "image", task.Spec.Image)
 		customTemplateName := taskTemplateName(task.Metadata.Name, task.Spec.Image, extraEnv)
 
@@ -187,7 +204,7 @@ func (r *TaskReconciler) Reconcile(ctx context.Context, task *v1alpha1.Task, wor
 		}
 	}
 
-	_, err := r.client.EnsureActor(ctx, atespace, actorName, templateAtespace, templateName)
+	_, err := r.client.EnsureActor(ctx, atespace, actorName, templateAtespace, templateName, seedTag)
 	if err != nil {
 		if substrate.IsTransientError(err) {
 			r.setNotReady(task, "SubstrateUnavailable", err.Error(), now)
