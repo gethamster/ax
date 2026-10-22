@@ -582,12 +582,17 @@ func (c *Client) ResumeActor(ctx context.Context, atespace, actorName string) (*
 }
 
 // SuspendActor suspends the specified actor, triggering state checkpointing.
+// The suspend is synchronous: it returns once the snapshot is durable, so the
+// actor is not left pinned to its node. An async suspend keeps it pinned until
+// atelet uploads the snapshot and detaches it, and a node removed before that
+// (a cluster scale-down) strands the actor: it can only resume on that node.
 func (c *Client) SuspendActor(ctx context.Context, atespace, actorName string) error {
 	req := &ateapipb.SuspendActorRequest{
 		Actor: &ateapipb.ObjectRef{
 			Atespace: atespace,
 			Name:     actorName,
 		},
+		Options: &ateapipb.SuspendOptions{Mode: ateapipb.DurabilityMode_DURABILITY_MODE_SYNCHRONOUS},
 	}
 	err := retryOnCodes(ctx, func() error {
 		_, err := c.control.SuspendActor(ctx, req)
